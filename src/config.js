@@ -1,4 +1,4 @@
-const CONTRACT_NAME = process.env.CONTRACT_NAME ||'dotz.near'
+const CONTRACT_NAME = process.env.CONTRACT_NAME ||'near-account-nft.near'
 
 function getConfig(env) {
   switch (env) {

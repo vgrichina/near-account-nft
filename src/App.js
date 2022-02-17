@@ -8,7 +8,7 @@ import getConfig from './config'
 import { utils } from 'near-api-js'
 const { networkId } = getConfig(process.env.NODE_ENV || 'development')
 
-const WEB4_PREFIX = process.env.WEB4_PREFIX || 'https://dotz.near.page';
+const WEB4_PREFIX = process.env.WEB4_PREFIX || 'https://near-account-nft.near.page';
 
 export default function App() {
   const [username, setUsername] = React.useState()
