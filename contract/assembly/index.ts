@@ -1,8 +1,7 @@
-import { Context, PersistentUnorderedMap, MapEntry, logging, storage, util, math } from 'near-sdk-as'
+import { Context, PersistentUnorderedMap, MapEntry, logging, storage, util, math, u128 } from 'near-sdk-as'
 import { bodyUrl, Web4Request, Web4Response } from './web4'
 
 const VOTE_COOLDOWN: u64 = 24 * 60 * 60 * 1000_000_000; // in nanoseconds
-const TEAMS = ['🔴 red', '🟢 green', '🔵 blue'];
 
 export function renderNFT(accountId: string): string {
   let seed = math.hash(accountId);
@@ -14,13 +13,6 @@ export function renderNFT(accountId: string): string {
   let s1 = seed[5] % 80 + 20;
   let s2 = seed[6] % 80 + 20;
 
-  const winning = 'winning 🏆';
-  const losing = 'losing 💩';
-  const teamIndex = seed[7] % TEAMS.length;
-  const team = TEAMS[teamIndex];
-  const winningTeamIndex = storage.getPrimitive<i32>('winning-team', -1);
-  const result = teamIndex == winningTeamIndex ? winning : losing;
-
   const svg = `
     <svg width="512" height="512" version="1.1" xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -31,8 +23,7 @@ export function renderNFT(accountId: string): string {
       </defs>
       <rect x="0" y="0" rx="15" ry="15" width="100%" height="100%" fill="url(#RadialGradient2)">
       </rect>
-      <text x="50%" y="48" style="font-family: sans-serif; font-size: 24px; fill: white;" text-anchor="middle" >${team} team is ${result}</text>
-      <text x="50%" y="96" style="font-family: sans-serif; font-size: 24px; fill: white;" text-anchor="middle" >Play at dotz.near.page</text>
+      <text x="50%" y="96" style="font-family: sans-serif; font-size: 24px; fill: white;" text-anchor="middle" >Claim at ${accountId}.page</text>
       <text x="50%" y="464" style="font-family: sans-serif; font-size: 48px; fill: white;" text-anchor="middle" >${accountId}</text>
     </svg>
   `;
@@ -185,50 +176,79 @@ export function nft_mint_to(receiver_id: string): void {
   minted.set(receiver_id, Context.blockTimestamp);
 }
 
-export function vote(): void {
-  const accountId = Context.sender;
-  assert(minted.contains(accountId), `${accountId} didn't mint NFT`);
-  assert(getTimeUntilVote(accountId) == 0, 'not enough time since last vote')
 
-  let seed = math.hash(accountId);
-  const teamIndex = seed[7] % TEAMS.length;
+@nearBindgen
+class Payout {
+  payout: Map<string, u128> = new Map();
+}
 
-  let votes = storage.get<u64[]>('team-votes', [0, 0, 0])!;
-  votes[teamIndex]++;
-  storage.set('team-votes', votes);
 
-  let winningTeam = 0;
-  for (let i = 0; i < votes.length; i++) {
-    if (votes[winningTeam] < votes[i]) {
-      winningTeam = i;
-    }
-  }
+/// Given a `token_id` and NEAR-denominated balance, return the `Payout`.
+/// struct for the given token. Panic if the length of the payout exceeds
+export function nft_payout(token_id: string, balance: u128, max_len_payout: u32): Payout {
+  // TODO
+  return new Payout();
+}
 
-  storage.set('winning-team', winningTeam);
-  storage.set(`last-vote:${accountId}`, Context.blockTimestamp);
+/// Given a `token_id` and NEAR-denominated balance, transfer the token
+/// and return the `Payout` struct for the given token. Panic if the
+/// length of the payout exceeds `max_len_payout.`
+export function nft_transfer_payout(
+  receiver_id: string,
+  token_id: string,
+  approval_id: u64,
+  balance: u128,
+  max_len_payout: u32,
+): Payout {
+  assert_one_yocto();
+
+  const  payout = nft_payout(token_id, balance, max_len_payout);
+  nft_transfer(receiver_id, token_id, approval_id);
+  return payout
 }
 
 @nearBindgen
-class TeamVotes {
-  team: string;
-  votes: u64;
+class TokenState {
+  owner: string;
+  approved: Map<string, u64> = new Map();
 }
 
-export function getTimeUntilVote(accountId: string): u64 {
-  const lastVoteKey = `last-vote:${accountId}`;
-  const lastVoteTime = storage.getPrimitive<u64>(lastVoteKey, 0);
-  const timeAfterLastVote = Context.blockTimestamp - lastVoteTime;
-  return timeAfterLastVote > VOTE_COOLDOWN ? 0 : VOTE_COOLDOWN - timeAfterLastVote;
-}
+export function nft_transfer(
+  receiver_id: string,
+  token_id: string,
+  // TODO: Is it allowed to skip approval_id for external callers?
+  approval_id: u64 = 0,
+  // memo: string | null
+): void {
+  const senderId = Context.predecessor;
+  
+  assert(senderId != receiver_id, 'The token owner and the receiver should be different');
 
-export function getTeamVotes(): TeamVotes[] {
-  let votes = storage.get<u64[]>('team-votes', [0, 0, 0])!;
-  let teamVotes: TeamVotes[] = [];
-  for (let i = 0; i < votes.length; i++) {
-    teamVotes.push({
-      team: TEAMS[i],
-      votes: votes[i]
-    })
+  const stateKey = `state:${token_id}`;
+  const state = storage.getSome<TokenState>(stateKey);
+  if (senderId != state.owner) {
+    assert(state.approved.has(senderId)), 'sender is not approved';
+
+    if (approval_id) {
+      assert(state.approved.get(senderId) == approval_id, `approval_id doesn't exist for sender`);
+    }
   }
-  return teamVotes;
+
+  state.approved = new Map();
+  state.owner = receiver_id;
+  storage.set(stateKey, state);
+}
+
+export function nft_approve(token_id: string, account_id: string, msg: string | null): void {
+  assert(msg == null, 'msg not supported');
+
+  const stateKey = `state:${token_id}`;
+  const state = storage.getSome<TokenState>(stateKey);
+  assert(state.owner == Context.predecessor, 'Must be called by token owner');
+
+  
+}
+
+function assert_one_yocto(): void {
+  assert(Context.attachedDeposit >= u128.One, 'need to attach at least 1 yoctoNEAR');
 }
