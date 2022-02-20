@@ -1,7 +1,5 @@
 import { Context, PersistentUnorderedMap, MapEntry, logging, storage, util, math, u128 } from 'near-sdk-as'
-import { bodyUrl, Web4Request, Web4Response } from './web4'
-
-const VOTE_COOLDOWN: u64 = 24 * 60 * 60 * 1000_000_000; // in nanoseconds
+import { bodyUrl, htmlResponse, Web4Request, Web4Response } from './web4'
 
 export function renderNFT(accountId: string): string {
   let seed = math.hash(accountId);
@@ -72,38 +70,27 @@ class Token {
     creator: string
     metadata: TokenMetadata
 
-    constructor(creator: string, issued_at: u64) {
+    constructor(creator: string, owner: string) {
       this.id = creator;
       this.creator = creator;
-      this.owner_id = creator;
+      this.owner_id = owner;
 
-      const title = `${creator}'s club card`;
+      const title = `${creator}`;
 
       const copies: u8 = 1
 
-      let media = `http://localhost:3000/img/${creator}`;
+      let media = `http://localhost:1234/img/${creator}`;
       if (Context.contractName.endsWith('.near') || Context.contractName.endsWith('.testnet')) {
         media = `https://${Context.contractName}.page/img/${creator}`;
       }
       this.metadata = new TokenMetadata(
           title,
-          `.near club card`,
+          `${creator} account for sale`,
           copies,
           media,
-          issued_at,
+          Context.blockTimestamp,
       )
     }
-}
-
-const minted = new PersistentUnorderedMap<string, u64>('minted');
-const twitterUsernames = new PersistentUnorderedMap<string, string>('twitter');
-
-export function setTwitterUsername(username: string): void {
-  twitterUsernames.set(Context.sender, username);
-}
-
-export function getTwitterUsername(accountId: string): string | null {
-  return twitterUsernames.get(accountId);
 }
 
 export function web4_get(request: Web4Request): Web4Response {
@@ -117,39 +104,37 @@ export function web4_get(request: Web4Request): Web4Response {
     return { contentType: 'image/svg+xml; charset=UTF-8', body: util.stringToBytes(svg) };
   }
 
-  return bodyUrl(`ipfs://bafybeibbw4lwftmc5qp3qvixf6sy3xqizyydedj6h5wpt3uq5vtgs42xue${request.path}`);
+  // return bodyUrl(`ipfs://bafybeibbw4lwftmc5qp3qvixf6sy3xqizyydedj6h5wpt3uq5vtgs42xue${request.path}`);
+  return htmlResponse(`
+    <img src="/img/${Context.contractName}">
+  `);
 }
 
 export function nft_token(token_id: string): Token | null {
-  if (!minted.contains(token_id)) {
+  if (token_id != Context.contractName) {
     return null;
   }
 
-  const issued_at = minted.getSome(token_id);
-  return new Token(token_id, issued_at);
+  const stateKey = `state:${token_id}`;
+  const state = storage.getSome<TokenState>(stateKey);
+
+  return new Token(token_id, state.owner);
 }
 
 export function nft_total_supply(): u64 {
-  return minted.length;
+  return 1;
 }
 
 export function nft_tokens(from_index: u64 = 0, limit: u8 = 0): Token[] {
-  let entries: MapEntry<string, u64>[] = minted.entries(<i32>from_index, <i32>limit || minted.length);
-  let tokens: Array<Token> = []
-
-  for (let i = 0; i < entries.length; i++) {
-    tokens.push(nft_token(entries[i].key)!);
-  }
-
-  return tokens
+  return [nft_token(Context.contractName)!];
 }
 
 export function nft_supply_for_owner(account_id: string): u64 {
-  if (!minted.contains(account_id)) {
-    return 0;
-  }
+  const token_id = Context.contractName;
+  const stateKey = `state:${token_id}`;
+  const state = storage.getSome<TokenState>(stateKey);
 
-  return 1;
+  return state.owner == account_id ? 1 : 0;
 }
 
 export function nft_tokens_for_owner(
@@ -157,25 +142,17 @@ export function nft_tokens_for_owner(
   from_index: u64 = 0,
   limit: u8 = 0
 ): Token[] {
-  if (!minted.contains(account_id) || from_index > 0 || limit < 1) {
+  const token = nft_token(Context.contractName);  
+  if (nft_supply_for_owner(account_id) == 0) {
     return [];
   }
 
-  return [nft_token(account_id)!];
+  return token ? [token!] : [];
 }
 
 export function nft_metadata(): NFTContractMetadata {
   return new NFTContractMetadata();
 }
-
-// TODO: Non-standard, check what other apps ended up using
-export function nft_mint_to(receiver_id: string): void {
-  assert(Context.sender == Context.contractName, 'Can only be called by owner');
-  assert(!minted.contains(receiver_id), `${receiver_id} minted already`);
-
-  minted.set(receiver_id, Context.blockTimestamp);
-}
-
 
 @nearBindgen
 class Payout {
@@ -186,7 +163,7 @@ class Payout {
 /// Given a `token_id` and NEAR-denominated balance, return the `Payout`.
 /// struct for the given token. Panic if the length of the payout exceeds
 export function nft_payout(token_id: string, balance: u128, max_len_payout: u32): Payout {
-  // TODO
+  // TODO: Real payouts for more complex tokens
   return new Payout();
 }
 
@@ -210,6 +187,7 @@ export function nft_transfer_payout(
 @nearBindgen
 class TokenState {
   owner: string;
+  last_id: u64;
   approved: Map<string, u64> = new Map();
 }
 
@@ -246,7 +224,30 @@ export function nft_approve(token_id: string, account_id: string, msg: string | 
   const state = storage.getSome<TokenState>(stateKey);
   assert(state.owner == Context.predecessor, 'Must be called by token owner');
 
-  
+  state.last_id++;
+  state.approved.set(account_id, state.last_id);
+  storage.set(stateKey, state);
+}
+
+export function nft_mint_to(receiver_id: string): void {
+  assert(Context.predecessor == Context.contractName, 'Must be called by self');
+
+  const token_id = Context.contractName;
+  const stateKey = `state:${token_id}`;
+  // assert(!storage.hasKey(stateKey), 'Can only be minted once');
+
+  const state = new TokenState();
+  state.owner = receiver_id;
+  storage.set(stateKey, state);
+
+  logging.log(`EVENT_JSON:{
+    "standard": "nep171",
+    "version": "1.0.0",
+    "event": "nft_mint",
+    "data": [
+      {"owner_id": "${receiver_id}", "token_ids": ["${token_id}"]}
+    ]
+  }`);
 }
 
 function assert_one_yocto(): void {
