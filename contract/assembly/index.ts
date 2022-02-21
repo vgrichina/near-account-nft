@@ -21,7 +21,7 @@ export function renderNFT(accountId: string): string {
       </defs>
       <rect x="0" y="0" rx="15" ry="15" width="100%" height="100%" fill="url(#RadialGradient2)">
       </rect>
-      <text x="50%" y="48" style="font-family: sans-serif; font-size: 16px; fill: white;" text-anchor="middle" >Claim at ${accountId}.page</text>
+      <text x="50%" y="48" style="font-family: sans-serif; font-size: 24px; fill: white;" text-anchor="middle" >Claim at ${accountId}.page</text>
       <text x="50%" y="464" style="font-family: sans-serif; font-size: 24px; fill: white;" text-anchor="middle" >${accountId}</text>
 
       <text x="50%" y="352" style="font-family: sans-serif; font-size: 24px; fill: white;" text-anchor="middle" >for sale</text>
@@ -118,7 +118,7 @@ class Token {
       this.creator = creator;
       this.owner_id = owner;
 
-      const title = `${creator}`;
+      const title = `${creator} for sale`;
 
       const copies: u8 = 1
 
